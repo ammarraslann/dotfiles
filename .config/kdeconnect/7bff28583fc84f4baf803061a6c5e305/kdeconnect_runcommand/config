@@ -1,0 +1,2 @@
+[General]
+commands="@ByteArray({\"31daea6b_16df_479a_a1cb_6cdaff37e512\":{\"command\":\"pactl set-sink-volume @DEFAULT_SINK@ +5%\",\"name\":\"volume up\"},\"4ee66706_4553_4b7c_8641_df653557ad2b\":{\"command\":\"systemctl suspend\",\"name\":\"Suspend\"},\"806b62ea_25af_4e8b_90d0_acfdcdad81a1\":{\"command\":\"pactl set-sink-volume @DEFAULT_SINK@ -5%\",\"name\":\"volume down\"}})"

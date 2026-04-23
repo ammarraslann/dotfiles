@@ -1,0 +1,74 @@
+{
+    "telemetry.sqmId": "",
+    "telemetry.machineId": "d04db8db974116ee502a3de9ba2ccf4cdc06d71e4dc4ad27937f41dd6c82f6b1",
+    "telemetry.devDeviceId": "7a166aec-5ea5-4c9a-875c-af2571f79dd9",
+    "backupWorkspaces": {
+        "workspaces": [],
+        "folders": [
+            {
+                "folderUri": "file:///mnt/nas/Ammar"
+            }
+        ],
+        "emptyWindows": []
+    },
+    "windowControlHeight": 35,
+    "profileAssociations": {
+        "workspaces": {
+            "file:///mnt/nas/Ammar": "__default__profile__"
+        },
+        "emptyWindows": {}
+    },
+    "theme": "vs-dark",
+    "themeBackground": "#5a5475",
+    "windowSplash": {
+        "zoomLevel": 0,
+        "baseTheme": "vs-dark",
+        "colorInfo": {
+            "foreground": "#f8f8f0",
+            "background": "#5a5475",
+            "editorBackground": "#5a5475",
+            "titleBarBackground": "#1e1f1c",
+            "activityBarBackground": "#343145",
+            "sideBarBackground": "#343145",
+            "sideBarBorder": "rgba(0, 0, 0, 0)",
+            "statusBarBackground": "#716799",
+            "statusBarNoFolderBackground": "#414339"
+        },
+        "layoutInfo": {
+            "sideBarSide": "left",
+            "editorPartMinWidth": 220,
+            "titleBarHeight": 35,
+            "activityBarWidth": 48,
+            "sideBarWidth": 0,
+            "auxiliaryBarWidth": 0,
+            "statusBarHeight": 22,
+            "windowBorder": false
+        }
+    },
+    "windowsState": {
+        "lastActiveWindow": {
+            "folder": "file:///mnt/nas/Ammar",
+            "backupPath": "/home/ammar/.config/VSCodium/Backups/05529953660adb6631a9bfdbe2e05c5b",
+            "uiState": {
+                "mode": 0,
+                "x": 0,
+                "y": 0,
+                "width": 953,
+                "height": 521
+            }
+        },
+        "openedWindows": []
+    },
+    "windowSplashWorkspaceOverride": {
+        "layoutInfo": {
+            "sideBarWidth": 235,
+            "auxiliaryBarWidth": 300,
+            "workspaces": {
+                "af0e958a075293d0a1babe41f0b3e496": {
+                    "sideBarVisible": false,
+                    "auxiliaryBarVisible": false
+                }
+            }
+        }
+    }
+}

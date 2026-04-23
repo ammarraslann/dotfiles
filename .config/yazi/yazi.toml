@@ -1,0 +1,11 @@
+[opener]
+text = [
+    { run = "nvim $@", block = true },
+]
+
+[open]
+rules = [
+    { mime = "text/*", use = "text" },
+    { mime = "application/json", use = "text" },
+    { mime = "application/lua", use = "text" },
+]

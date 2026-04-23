@@ -1,0 +1,29 @@
+[Added Associations]
+text/html=zen.desktop;
+video/mp2t=vlc-9.desktop;
+video/mp4=vlc-10.desktop;vlc-8.desktop;vlc-7.desktop;
+video/vnd.avi=vlc-4.desktop;vlc-3.desktop;vlc-2.desktop;
+video/x-matroska=vlc-6.desktop;vlc-5.desktop;
+x-scheme-handler/chrome=zen.desktop;
+x-scheme-handler/http=zen.desktop;
+x-scheme-handler/https=zen.desktop;
+
+[Default Applications]
+application/x-extension-htm=zen.desktop
+application/x-extension-html=zen.desktop
+application/x-extension-shtml=zen.desktop
+application/x-extension-xht=zen.desktop
+application/x-extension-xhtml=zen.desktop
+application/xhtml+xml=zen.desktop
+text/html=zen.desktop
+video/mp2t=vlc-9.desktop;
+video/mp4=vlc-10.desktop;
+video/mpeg=vlc.desktop
+video/vnd.avi=vlc-4.desktop;
+video/x-matroska=vlc-6.desktop;
+video/x-msvideo=vlc.desktop
+x-scheme-handler/about=chromium.desktop
+x-scheme-handler/chrome=zen.desktop
+x-scheme-handler/http=zen.desktop
+x-scheme-handler/https=zen.desktop
+x-scheme-handler/unknown=chromium.desktop
