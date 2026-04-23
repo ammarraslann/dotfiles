@@ -1,0 +1,6 @@
+[Desktop Entry]
+Exec=/usr/bin/vlc
+MimeType=video/vnd.avi;
+Name=vlc
+NoDisplay=true
+Type=Application

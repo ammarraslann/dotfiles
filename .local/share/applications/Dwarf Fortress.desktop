@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Dwarf Fortress
+Comment=Play this game on Steam
+Exec=steam steam://rungameid/975370
+Icon=steam_icon_975370
+Terminal=false
+Type=Application
+Categories=Game;
