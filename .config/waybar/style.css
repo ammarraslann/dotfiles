@@ -1,0 +1,130 @@
+@import url("./colors.css");
+* {
+    border: none;
+    border-radius: 0;
+    font-family: Iosevka;
+    font-size: 11pt;
+    min-height: 0;
+}
+window#waybar {
+    opacity: 0.9;
+    background: @background-darker;
+    color: @foreground;
+    border-bottom: 2px solid @background;
+}
+#workspaces button {
+    padding: 0 10px;
+    background: @background;
+    color: @foreground;
+}
+#workspaces button:hover {
+    box-shadow: inherit;
+    text-shadow: inherit;
+    background-image: linear-gradient(0deg, @selection, @background-darker);
+}
+#workspaces button.focused,
+#workspaces button.active {
+    background-image: linear-gradient(0deg, #c8845a, #b89a7a);
+}
+#workspaces button.urgent {
+    background-image: linear-gradient(0deg, @red, @background-darker);
+}
+#taskbar button.active {
+    background-image: linear-gradient(0deg, @selection, @background-darker);
+}
+#clock {
+    padding: 0 4px;
+    background: @background;
+}
+#battery {
+    padding: 0 4px;
+    background: @background;
+}
+#battery.critical:not(.charging) {
+    color: @red;
+    animation-name: blink;
+    animation-duration: 0.5s;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+    animation-direction: alternate;
+}
+#temperature {
+    padding: 0 4px;
+    background: @background;
+}
+#temperature.critical {
+    color: @red;
+}
+#memory {
+    padding: 0 4px;
+    background: @background;
+}
+#custom-power {
+    padding: 0 8px;
+    background: @background;
+    color: @red;
+}
+#custom-battery {
+    padding: 0 4px;
+    background: @background;
+}
+#custom-battery.power-saver {
+    color: #50fa7b;
+}
+#custom-battery.balanced {
+    color: @foreground;
+}
+#custom-battery.performance {
+    color: #ff5555;
+}
+#custom-vpn {
+    padding: 0 4px;
+    background: @background;
+}
+#custom-vpn.mullvad {
+    color: #50fa7b;
+}
+#custom-vpn.neu {
+    color: #8be9fd;
+}
+#custom-vpn.disconnected {
+    color: #ff5555;
+}
+#pulseaudio {
+    padding: 0 4px;
+    background: @background;
+}
+#pulseaudio.muted {
+    color: @warm-muted;
+}
+#cpu {
+    padding: 0 4px;
+    background: @background;
+}
+#custom-storage {
+    padding: 0 4px;
+    background: @background;
+}
+#custom-storage.warning {
+    color: orange;
+}
+#custom-storage.critical {
+    color: @red;
+}
+#custom-power-draw {
+    padding: 0 4px;
+    background: @background;
+}
+#custom-launcher {
+    padding: 0 10px;
+    background: @background;
+    color: @burnt-sienna;
+    font-size: 13pt;
+}
+#custom-launcher:hover {
+    background: @selection;
+}
+#custom-weather {
+    padding: 0 4px;
+    background: @background;
+}

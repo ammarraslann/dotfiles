@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Screenshot
+Comment=Take a screenshot of a region
+Exec=grim -g "$(slurp)" ~/Pictures/Screenshots/$(date +%%Y%%m%%d_%%H%%M%%S).png
+Icon=applets-screenshooter
+Type=Application
+Categories=Utility;

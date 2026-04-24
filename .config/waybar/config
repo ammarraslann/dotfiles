@@ -1,0 +1,149 @@
+{
+  "layer": "top",
+  "position": "top",
+  "height": 24,
+  "spacing": 4,
+
+  "modules-left": [
+    "hyprland/workspaces",
+    "wlr/taskbar"
+  ],
+  "modules-center": [
+    "hyprland/window"
+  ],
+  "modules-right": [
+    "tray",
+    "hyprland/language",
+    "custom/weather",
+    "custom/vpn",
+    "pulseaudio",
+    "temperature",
+    "cpu",
+    "memory",
+    "custom/power-draw",
+    "custom/storage",
+    "custom/battery",
+    "clock",
+    "custom/launcher"
+  ],
+
+  "wlr/taskbar": {
+    "on-click": "activate",
+    "on-click-middle": "close",
+    "ignore-list": ["foot"]
+  },
+
+  "hyprland/workspaces": {
+    "format": "{id}",
+    "on-click": "activate",
+    "sort-by-number": true
+  },
+
+  "hyprland/window": {
+    "max-length": 200
+  },
+
+  "hyprland/language": {
+    "format-pl": "[pl]",
+    "format-en": "[us]",
+    "on-click": "hyprctl switchxkblayout at-translated-set-2-keyboard next"
+  },
+
+  "tray": {
+    "spacing": 4
+  },
+
+  "clock": {
+    "format": "{:%a %b %d  %I:%M %p}",
+    "tooltip-format": "<big>{:%Y %B}</big>\n<tt><small>{calendar}</small></tt>"
+  },
+
+  "temperature": {
+    "interval": 30,
+    "critical-threshold": 80,
+    "hwmon-path": "/sys/class/hwmon/hwmon6/temp1_input",
+    "format": " {temperatureC}°C",
+    "format-critical": " {temperatureC}°C",
+    "tooltip": false,
+    "on-click": "kitty --title btop btop"
+  },
+
+  "cpu": {
+    "interval": 5,
+    "format": " {usage}%",
+    "tooltip-format": "CPU: {usage}% — {avg_frequency:.2f}GHz",
+    "on-click": "kitty --title btop btop"
+  },
+
+  "memory": {
+    "interval": 5,
+    "format": " {used:.1f}G",
+    "tooltip-format": "RAM: {used:.1f}G used of {total:.1f}G\nSwap: {swapUsed:.1f}G used of {swapTotal:.1f}G",
+    "on-click": "kitty --title btop btop"
+  },
+
+  "pulseaudio": {
+    "format": "{icon} {volume}%",
+    "format-muted": " mute",
+    "format-icons": {
+      "headphone": "",
+      "hands-free": "",
+      "headset": "",
+      "phone": "",
+      "portable": "",
+      "car": "",
+      "default": ["", "", ""]
+    },
+    "scroll-step": 5,
+    "on-click": "pavucontrol",
+    "on-click-right": "swayosd-client --output-volume mute-toggle",
+    "tooltip-format": "{desc} — {volume}%",
+    "smooth-scrolling-threshold": 1
+  },
+
+  "custom/weather": {
+    "exec": "~/.config/waybar/modules/weather.sh Boston",
+    "return-type": "json",
+    "format": "{}",
+    "tooltip": true,
+    "interval": 900
+  },
+
+  "custom/vpn": {
+    "exec": "~/.config/waybar/modules/vpn-status.sh",
+    "return-type": "json",
+    "interval": 5,
+    "on-click": "bash ~/.config/waybar/modules/vpn-status.sh & disown",
+    "tooltip": true
+  },
+
+  "custom/battery": {
+    "exec": "~/.config/waybar/modules/battery-profile.sh",
+    "return-type": "json",
+    "interval": 5,
+    "on-click": "bash ~/.config/waybar/modules/power-profile.sh & disown",
+    "tooltip": true
+  },
+
+  "custom/storage": {
+    "exec": "~/.config/waybar/modules/storage.sh /",
+    "return-type": "json",
+    "interval": 30,
+    "on-click": "kitty --title yazi yazi",
+    "tooltip": true
+  },
+
+  "custom/power-draw": {
+    "exec": "~/.config/waybar/modules/power-draw.sh",
+    "return-type": "json",
+    "interval": 5,
+    "tooltip": true
+  },
+
+  "custom/launcher": {
+    "format": "",
+    "on-click": "wofi --show drun",
+    "on-click-right": "~/.config/waybar/modules/power-menu.sh",
+    "tooltip-format": "Left: App launcher  Right: Power menu"
+  }
+}

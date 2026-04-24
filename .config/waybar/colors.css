@@ -1,0 +1,10 @@
+@define-color background-darker rgba(30, 26, 22, 230);
+@define-color background        rgba(42, 34, 26, 255);
+@define-color selection         rgba(90, 64, 48, 255);
+@define-color foreground        #d4b896;
+@define-color warm-muted        #7a6050;
+@define-color burnt-sienna      #c8845a;
+@define-color sandy-brown       #b89a7a;
+@define-color red               #ff5555;
+@define-color green             #50fa7b;
+@define-color cyan              #8be9fd;

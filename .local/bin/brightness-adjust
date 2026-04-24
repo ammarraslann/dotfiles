@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# brightness-adjust [up|down] [amount]
+# Routes to brightnessctl (internal eDP) or ddcutil (external LG via DDC/CI)
+
+DIRECTION=${1:-up}
+AMOUNT=${2:-5}
+
+MONITOR=$(hyprctl monitors -j | jq -r '.[] | select(.focused == true) | .name')
+MONITOR_ID=$(hyprctl monitors -j | jq -r '.[] | select(.focused == true) | .id')
+
+case "$MONITOR" in
+  eDP-1)
+    if [[ "$DIRECTION" == "up" ]]; then
+      brightnessctl set "${AMOUNT}%+"
+    else
+      brightnessctl set "${AMOUNT}%-"
+    fi
+    ;;
+  *)
+    DISPLAY_NUM=$((MONITOR_ID + 1))
+    CURRENT=$(ddcutil --display "$DISPLAY_NUM" getvcp 10 --terse 2>/dev/null | awk '{print $4}')
+    if [[ -z "$CURRENT" ]]; then
+      notify-send "Brightness" "DDC/CI not available on $MONITOR — check LG OSD menu"
+      exit 1
+    fi
+    if [[ "$DIRECTION" == "up" ]]; then
+      NEW=$((CURRENT + AMOUNT))
+    else
+      NEW=$((CURRENT - AMOUNT))
+    fi
+    [[ $NEW -lt 0 ]]   && NEW=0
+    [[ $NEW -gt 100 ]] && NEW=100
+    ddcutil --display "$DISPLAY_NUM" --sleep-multiplier 0.1 setvcp 10 "$NEW" &
+    swayosd-client --monitor "$MONITOR" --custom-progress "$NEW" 100
+    ;;
+esac
