@@ -2,23 +2,43 @@
 # =============================================================================
 # bootstrap.sh — Ammar's Arch Linux Setup
 #
-# Base: fresh Arch Linux via archinstall (Hyprland profile, Limine, BTRFS)
+# Base: fresh Arch Linux via archinstall (GRUB, BTRFS, with Snapper)
 # CachyOS repos + kernel added on top of vanilla Arch.
 # Run as normal user (not root). Requires internet.
 #
 # Usage: bash bootstrap.sh
+# Logs all failures to ~/bootstrap-errors.log for manual follow-up.
 # =============================================================================
 
-set -e
+# NO set -e — we catch errors per-step and log them, never abort entirely
 set -u
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
 
-log()     { echo -e "${GREEN}[+]${NC} $1"; }
-warn()    { echo -e "${YELLOW}[!]${NC} $1"; }
-error()   { echo -e "${RED}[x]${NC} $1"; exit 1; }
+LOG_FILE="$HOME/bootstrap-errors.log"
+echo "Bootstrap started: $(date)" >"$LOG_FILE"
+
+log() { echo -e "${GREEN}[+]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+fail() {
+  echo -e "${RED}[x]${NC} $1"
+  echo "[FAILED] $1" >>"$LOG_FILE"
+}
 section() { echo -e "\n${BLUE}=====================================${NC}\n${CYAN}  $1\n${BLUE}=====================================${NC}"; }
+
+# Safe run: logs failures but never exits the script
+run() {
+  if ! "$@"; then
+    fail "Command failed: $*"
+    return 1
+  fi
+  return 0
+}
 
 # =============================================================================
 # CONFIGURATION — fill these before running
@@ -27,9 +47,9 @@ section() { echo -e "\n${BLUE}=====================================${NC}\n${CYAN
 DOTFILES_REPO="https://github.com/ammarraslann/dotfiles"
 WALLPAPERS_REPO="https://github.com/ammarraslann/wallpapers"
 
-NAS_IP=""            # e.g. "192.168.1.100"
-NAS_SHARE=""         # SMB share name e.g. "media"
-NAS_USER=""          # NAS username
+NAS_IP=""    # e.g. "192.168.1.100"
+NAS_SHARE="" # SMB share name e.g. "media"
+NAS_USER=""  # NAS username
 NAS_MOUNT="/mnt/nas"
 
 # =============================================================================
@@ -38,12 +58,31 @@ NAS_MOUNT="/mnt/nas"
 
 section "Preflight"
 
-[[ $EUID -eq 0 ]] && error "Run as your normal user, not root."
-ping -c 1 archlinux.org &>/dev/null || error "No internet connection."
+[[ $EUID -eq 0 ]] && {
+  fail "Run as your normal user, not root."
+  exit 1
+}
+ping -c 1 archlinux.org &>/dev/null || {
+  fail "No internet connection."
+  exit 1
+}
 
 USERNAME=$(whoami)
 log "User: $USERNAME"
 log "Internet: OK"
+
+# Detect GPU — used to decide which drivers to install
+GPU_VENDOR=""
+if lspci 2>/dev/null | grep -qi nvidia; then
+  GPU_VENDOR="nvidia"
+  log "GPU detected: NVIDIA"
+elif lspci 2>/dev/null | grep -qi "amd\|radeon\|advanced micro"; then
+  GPU_VENDOR="amd"
+  log "GPU detected: AMD"
+else
+  GPU_VENDOR="unknown"
+  warn "GPU vendor not detected — skipping GPU driver install"
+fi
 
 # =============================================================================
 # STEP 1 — Mirrors + system update
@@ -51,11 +90,18 @@ log "Internet: OK"
 
 section "Mirrors + system update"
 
-sudo pacman -S --noconfirm --needed reflector rsync
-sudo reflector --country US --age 12 --protocol https --sort rate \
-  --save /etc/pacman.d/mirrorlist
-sudo pacman -Syu --noconfirm
-log "System up to date"
+run sudo pacman -S --noconfirm --needed reflector rsync || true
+
+# Reflector failure is non-fatal — mirrors may already be fine
+if sudo reflector --country US --age 12 --protocol https --sort rate \
+  --save /etc/pacman.d/mirrorlist 2>/dev/null; then
+  log "Mirrors updated"
+else
+  warn "Reflector failed — using existing mirrors"
+fi
+
+run sudo pacman -Syu --noconfirm && log "System up to date" ||
+  fail "System update failed — continuing anyway"
 
 # =============================================================================
 # STEP 2 — yay (AUR helper)
@@ -63,94 +109,202 @@ log "System up to date"
 
 section "AUR helper (yay)"
 
-if ! command -v yay &>/dev/null; then
-  sudo pacman -S --noconfirm --needed git base-devel
-  git clone https://aur.archlinux.org/yay.git /tmp/yay
-  cd /tmp/yay && makepkg -si --noconfirm
-  cd ~
-  log "yay installed"
-else
+if command -v yay &>/dev/null; then
   log "yay already present"
+elif pacman -Si yay &>/dev/null 2>&1; then
+  # yay is available in repos (CachyOS provides it)
+  run sudo pacman -S --noconfirm --needed yay && log "yay installed from repo" ||
+    fail "yay install from repo failed"
+else
+  # Fall back to building from AUR
+  run sudo pacman -S --noconfirm --needed git base-devel || true
+  if git clone https://aur.archlinux.org/yay.git /tmp/yay 2>/dev/null; then
+    cd /tmp/yay && makepkg -si --noconfirm && cd ~ && log "yay built from AUR" ||
+      fail "yay build from AUR failed"
+  else
+    fail "yay unavailable — AUR packages will be skipped"
+  fi
 fi
 
 # =============================================================================
 # STEP 3 — CachyOS repos + kernel
 #
-# Official CachyOS script detects CPU instruction set and adds the right repos.
-# Result: vanilla Arch + CachyOS-optimized kernel.
-# linux-lts = plain vanilla Arch LTS kernel — boring, stable, fallback only.
+# The official script detects CPU instruction set and adds the right repo tier.
+# If it fails (URL changed, network issue), we skip and stay on vanilla kernel.
+# linux-lts = vanilla Arch fallback, always available regardless of CachyOS.
 # =============================================================================
 
 section "CachyOS repos + kernel"
 
-if ! grep -q "\[cachyos\]" /etc/pacman.conf; then
-  log "Adding CachyOS repos..."
-  curl -fsSL https://mirror.cachyos.org/cachyos-repo.sh -o /tmp/cachyos-repo.sh
-  bash /tmp/cachyos-repo.sh
-  sudo pacman -Sy
-  log "CachyOS repos added"
-else
+CACHYOS_OK=false
+
+if grep -q "\[cachyos\]" /etc/pacman.conf 2>/dev/null; then
   log "CachyOS repos already present"
+  CACHYOS_OK=true
+else
+  log "Attempting to add CachyOS repos..."
+  CACHYOS_SCRIPT_URL="https://mirror.cachyos.org/cachyos-repo.sh"
+
+  if curl -fsSL --connect-timeout 10 "$CACHYOS_SCRIPT_URL" -o /tmp/cachyos-repo.sh 2>/dev/null; then
+    if bash /tmp/cachyos-repo.sh; then
+      sudo pacman -Sy &>/dev/null || true
+      log "CachyOS repos added"
+      CACHYOS_OK=true
+    else
+      fail "CachyOS repo script failed — staying on vanilla Arch kernel"
+    fi
+  else
+    fail "CachyOS repo script URL unreachable — staying on vanilla Arch kernel"
+    warn "Manual fix: visit https://cachyos.org/download/ for current install method"
+  fi
 fi
 
-sudo pacman -S --noconfirm --needed \
-  linux-cachyos \
-  linux-cachyos-headers \
-  linux-lts \
-  linux-lts-headers \
-  cachyos-gaming-meta
+# Install kernels — only attempt cachyos kernel if repos are present
+if [[ "$CACHYOS_OK" == true ]]; then
+  run sudo pacman -S --noconfirm --needed \
+    linux-cachyos linux-cachyos-headers &&
+    log "CachyOS kernel installed" ||
+    fail "CachyOS kernel install failed — staying on installed kernel"
 
-log "Kernels installed (cachyos = main, lts = fallback)"
-warn "Add both kernels as Limine entries after first boot"
+  run sudo pacman -S --noconfirm --needed \
+    cachyos-gaming-meta &&
+    log "CachyOS gaming meta installed" ||
+    fail "cachyos-gaming-meta failed — install manually after checking repo"
+fi
+
+# LTS kernel is always vanilla Arch — always attempt this
+run sudo pacman -S --noconfirm --needed linux-lts linux-lts-headers &&
+  log "LTS fallback kernel installed" ||
+  fail "LTS kernel install failed"
 
 # =============================================================================
-# STEP 4 — NVIDIA drivers (1660 Ti)
+# STEP 4 — Snapper + grub-btrfs (BTRFS snapshot restore points at boot)
 #
-# nvidia-dkms rebuilds for every kernel automatically via pacman hook below.
-# nvidia-open does NOT support Turing (1660 Ti) — proprietary only.
+# This gives you the macOS Time Machine-like boot menu.
+# Snapper takes snapshots before/after every pacman transaction via snap-pac.
+# grub-btrfs detects those snapshots and adds them to the GRUB boot menu.
+# NOTE: Only useful if root filesystem is BTRFS. Skips gracefully on ext4.
 # =============================================================================
 
-section "NVIDIA drivers (1660 Ti)"
+section "BTRFS snapshots (Snapper + grub-btrfs)"
 
-sudo pacman -S --noconfirm --needed \
-  nvidia-dkms \
-  nvidia-utils \
-  nvidia-settings \
-  lib32-nvidia-utils \
-  libva-nvidia-driver
+ROOT_FS=$(findmnt -n -o FSTYPE / 2>/dev/null || echo "unknown")
 
-# Add nvidia modules to initramfs — prevents black screen on boot
-sudo sed -i 's/^MODULES=(\(.*\))/MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)/' \
-  /etc/mkinitcpio.conf
-sudo mkinitcpio -P
-log "NVIDIA modules added to initramfs"
+if [[ "$ROOT_FS" == "btrfs" ]]; then
+  log "Root is BTRFS — setting up Snapper"
 
-# Pacman hook: auto-rebuild nvidia-dkms on every kernel update
-sudo mkdir -p /etc/pacman.d/hooks/
-cat > /tmp/nvidia-dkms.hook << 'EOF'
+  run sudo pacman -S --noconfirm --needed snapper snap-pac &&
+    log "Snapper installed" ||
+    fail "Snapper install failed"
+
+  # grub-btrfs from AUR — adds snapshots to GRUB menu automatically
+  if command -v yay &>/dev/null; then
+    run yay -S --noconfirm grub-btrfs &&
+      log "grub-btrfs installed" ||
+      fail "grub-btrfs install failed"
+  else
+    fail "yay unavailable — install grub-btrfs manually: yay -S grub-btrfs"
+  fi
+
+  # Create snapper config for root
+  if ! snapper list-configs 2>/dev/null | grep -q "^root"; then
+    run sudo snapper -c root create-config / &&
+      log "Snapper root config created" ||
+      fail "Snapper config failed — run: sudo snapper -c root create-config /"
+  else
+    log "Snapper root config already exists"
+  fi
+
+  # Enable grub-btrfs watcher so GRUB menu updates on new snapshots
+  run sudo systemctl enable --now grub-btrfsd &&
+    log "grub-btrfsd enabled" ||
+    fail "grub-btrfsd enable failed"
+
+  # Rebuild GRUB config to include existing snapshots
+  run sudo grub-mkconfig -o /boot/grub/grub.cfg &&
+    log "GRUB config rebuilt with snapshot entries" ||
+    fail "grub-mkconfig failed"
+else
+  warn "Root filesystem is $ROOT_FS, not BTRFS — skipping Snapper setup"
+  warn "To get snapshot restore points, reinstall with BTRFS root"
+fi
+
+# =============================================================================
+# STEP 5 — GPU drivers (hardware-detected)
+#
+# NVIDIA: proprietary nvidia-dkms — required for 1660 Ti (Turing, no open support)
+# AMD:    mesa + vulkan-radeon — open source, works out of the box
+# Both:   script detects GPU at startup and installs accordingly
+# Hardware-agnostic: if neither detected, skips drivers entirely
+# =============================================================================
+
+section "GPU drivers ($GPU_VENDOR)"
+
+if [[ "$GPU_VENDOR" == "nvidia" ]]; then
+
+  run sudo pacman -S --noconfirm --needed \
+    nvidia-dkms nvidia-utils nvidia-settings lib32-nvidia-utils libva-nvidia-driver &&
+    log "NVIDIA drivers installed" ||
+    { fail "NVIDIA driver install failed — system may boot to black screen"; }
+
+  # Add NVIDIA modules to initramfs
+  # Handles both empty MODULES=() and already-populated MODULES=(something)
+  CURRENT_MODULES=$(grep "^MODULES=" /etc/mkinitcpio.conf | sed 's/MODULES=(\(.*\))/\1/')
+  if echo "$CURRENT_MODULES" | grep -q "nvidia"; then
+    log "NVIDIA modules already in mkinitcpio.conf"
+  else
+    sudo sed -i "s/^MODULES=(\(.*\))/MODULES=(\1 nvidia nvidia_modeset nvidia_uvm nvidia_drm)/" \
+      /etc/mkinitcpio.conf
+    # Clean up double spaces if MODULES was empty
+    sudo sed -i 's/MODULES=(  /MODULES=(/' /etc/mkinitcpio.conf
+    run sudo mkinitcpio -P &&
+      log "NVIDIA modules added to initramfs" ||
+      fail "mkinitcpio rebuild failed — rerun manually: sudo mkinitcpio -P"
+  fi
+
+  # Pacman hook: rebuild DKMS module on kernel updates
+  sudo mkdir -p /etc/pacman.d/hooks/
+  cat >/tmp/nvidia-dkms.hook <<'EOF'
 [Trigger]
 Operation = Install
 Operation = Upgrade
 Operation = Remove
 Type = Package
-Target = linux-cachyos
+Target = linux
 Target = linux-lts
+Target = linux-cachyos
 
 [Action]
 Description = Rebuilding NVIDIA DKMS module...
 When = PostTransaction
 Exec = /usr/bin/mkinitcpio -P
 EOF
-sudo mv /tmp/nvidia-dkms.hook /etc/pacman.d/hooks/nvidia-dkms.hook
-log "NVIDIA DKMS pacman hook installed"
+  sudo mv /tmp/nvidia-dkms.hook /etc/pacman.d/hooks/nvidia-dkms.hook
+  log "NVIDIA DKMS pacman hook installed"
+
+  # Add cursor fix for NVIDIA Wayland
+  if ! grep -q "no_hardware_cursors" ~/.config/hypr/config/input.conf 2>/dev/null; then
+    warn "Add 'no_hardware_cursors = true' under cursor {} in input.conf for NVIDIA Wayland"
+  fi
+
+elif [[ "$GPU_VENDOR" == "amd" ]]; then
+
+  run sudo pacman -S --noconfirm --needed \
+    mesa lib32-mesa vulkan-radeon lib32-vulkan-radeon libva-mesa-driver &&
+    log "AMD drivers installed" ||
+    fail "AMD driver install failed"
+
+else
+  warn "Unknown GPU — skipping driver install. Install manually."
+fi
 
 # =============================================================================
-# STEP 5 — Hyprland ecosystem
+# STEP 6 — Hyprland ecosystem
 # =============================================================================
 
 section "Hyprland ecosystem"
 
-sudo pacman -S --noconfirm --needed \
+run sudo pacman -S --noconfirm --needed \
   hyprland \
   hyprlock \
   xdg-desktop-portal-hyprland \
@@ -160,7 +314,6 @@ sudo pacman -S --noconfirm --needed \
   waybar \
   mako \
   wofi \
-  awww \
   imagemagick \
   wl-clipboard \
   cliphist \
@@ -171,155 +324,148 @@ sudo pacman -S --noconfirm --needed \
   network-manager-applet \
   hyprpolkitagent \
   swayidle \
-  sddm
+  sddm &&
+  log "Hyprland ecosystem installed" ||
+  fail "Some Hyprland packages failed — check log"
 
-log "Hyprland ecosystem installed"
+# awww (renamed from swww) — try both names for compatibility
+if pacman -Si awww &>/dev/null 2>&1; then
+  run sudo pacman -S --noconfirm --needed awww &&
+    log "awww (wallpaper daemon) installed" ||
+    fail "awww install failed"
+elif pacman -Si swww &>/dev/null 2>&1; then
+  run sudo pacman -S --noconfirm --needed swww &&
+    log "swww installed (awww not found)" ||
+    fail "swww install failed"
+  warn "Update autostart.conf: change awww-daemon to swww-daemon and awww to swww"
+else
+  fail "Neither awww nor swww found — install wallpaper daemon manually"
+fi
 
 # =============================================================================
-# STEP 6 — Audio (PipeWire + WirePlumber)
-#
-# WirePlumber fix (auto-move streams on sink change) lives in dotfiles at:
-# .config/wireplumber/wireplumber.conf.d/51-follow-default.conf
-# Restored from dotfiles in step 11.
+# STEP 7 — Audio (PipeWire)
 # =============================================================================
 
 section "Audio (PipeWire)"
 
-sudo pacman -S --noconfirm --needed \
-  pipewire \
-  pipewire-alsa \
-  pipewire-pulse \
-  pipewire-audio \
-  wireplumber \
-  pavucontrol \
-  playerctl
+run sudo pacman -S --noconfirm --needed \
+  pipewire pipewire-alsa pipewire-pulse pipewire-audio wireplumber pavucontrol playerctl &&
+  log "PipeWire installed" ||
+  fail "PipeWire install failed"
 
-systemctl --user enable --now pipewire pipewire-pulse wireplumber
-log "PipeWire services enabled"
+# User services — may fail if session not fully initialized, that's OK
+systemctl --user enable pipewire pipewire-pulse wireplumber 2>/dev/null &&
+  log "PipeWire services enabled" ||
+  warn "PipeWire service enable failed — will start on next login"
 
 # =============================================================================
-# STEP 7 — OSD (SwayOSD)
-#
-# Handles volume + brightness on-screen display.
-# Shows on focused monitor in multi-monitor setups.
+# STEP 8 — OSD (SwayOSD)
 # =============================================================================
 
 section "OSD (SwayOSD)"
 
-yay -S --noconfirm swayosd-git
-sudo usermod -aG video "$USERNAME"
-systemctl --user enable --now swayosd-server
-log "SwayOSD installed"
+if command -v yay &>/dev/null; then
+  run yay -S --noconfirm swayosd-git &&
+    log "SwayOSD installed" ||
+    fail "SwayOSD install failed — volume/brightness OSD won't show"
+
+  sudo usermod -aG video "$USERNAME" 2>/dev/null || true
+
+  systemctl --user enable swayosd-server 2>/dev/null &&
+    log "SwayOSD server enabled" ||
+    warn "SwayOSD server enable failed — will need manual start"
+else
+  fail "yay unavailable — skipping SwayOSD. Install manually: yay -S swayosd-git"
+fi
 
 # =============================================================================
-# STEP 8 — Brightness control
-#
-# Internal display : brightnessctl
-# External LG      : ddcutil over DDC/CI (i2c bus)
-#
-# brightness-adjust script lives in dotfiles at .local/bin/brightness-adjust
-# and is restored in step 11. This step sets up the system-level permissions.
-#
-# After reboot: run `ddcutil detect` to verify LG is accessible.
-# If not found: enable DDC/CI in the LG monitor's OSD menu.
+# STEP 9 — Brightness control (DDC/CI for external monitor)
 # =============================================================================
 
-section "Brightness control (internal + DDC/CI)"
+section "Brightness control"
 
-sudo pacman -S --noconfirm --needed \
-  brightnessctl \
-  ddcutil \
-  i2c-tools \
-  bc
+run sudo pacman -S --noconfirm --needed brightnessctl ddcutil i2c-tools bc &&
+  log "Brightness tools installed" ||
+  fail "Brightness tools install failed"
 
-sudo modprobe i2c-dev
-echo "i2c-dev" | sudo tee /etc/modules-load.d/i2c-dev.conf > /dev/null
-sudo groupadd -f i2c
-sudo usermod -aG i2c "$USERNAME"
-sudo cp /usr/share/ddcutil/data/45-ddcutil-i2c.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules && sudo udevadm trigger
-log "DDC/CI permissions configured"
-warn "Run 'ddcutil detect' after reboot to verify LG monitor"
+sudo modprobe i2c-dev 2>/dev/null || true
+echo "i2c-dev" | sudo tee /etc/modules-load.d/i2c-dev.conf >/dev/null
+sudo groupadd -f i2c 2>/dev/null || true
+sudo usermod -aG i2c "$USERNAME" 2>/dev/null || true
+
+DDCUTIL_RULES="/usr/share/ddcutil/data/45-ddcutil-i2c.rules"
+if [[ -f "$DDCUTIL_RULES" ]]; then
+  sudo cp "$DDCUTIL_RULES" /etc/udev/rules.d/
+  sudo udevadm control --reload-rules && sudo udevadm trigger
+  log "DDC/CI udev rules installed"
+else
+  fail "ddcutil rules file not found at expected path — run: sudo cp \$(find /usr -name '45-ddcutil*') /etc/udev/rules.d/"
+fi
 
 # =============================================================================
-# STEP 9 — Applications
+# STEP 10 — Terminal + shell (zsh)
+# =============================================================================
+
+section "Terminal + shell"
+
+run sudo pacman -S --noconfirm --needed \
+  kitty zsh zsh-syntax-highlighting zsh-autosuggestions \
+  zsh-history-substring-search starship neovim yazi \
+  zoxide fzf ripgrep fd bat eza fastfetch &&
+  log "Terminal tools installed" ||
+  fail "Some terminal tools failed"
+
+if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
+  RUNZSH=no CHSH=no sh -c \
+    "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" &&
+    log "Oh-My-Zsh installed" ||
+    fail "Oh-My-Zsh install failed"
+else
+  log "Oh-My-Zsh already installed"
+fi
+
+if [[ "$SHELL" != "$(which zsh)" ]]; then
+  chsh -s "$(which zsh)" &&
+    log "Default shell set to zsh" ||
+    fail "chsh failed — run manually: chsh -s \$(which zsh)"
+fi
+
+# =============================================================================
+# STEP 11 — Applications
 # =============================================================================
 
 section "Applications"
 
-sudo pacman -S --noconfirm --needed \
+run sudo pacman -S --noconfirm --needed \
   firefox \
-  dolphin \
-  dolphin-plugins \
-  ffmpegthumbs \
-  kdegraphics-thumbnailers \
-  kio-extras \
+  dolphin dolphin-plugins ffmpegthumbs kdegraphics-thumbnailers kio-extras \
   samba \
   vscodium \
-  remmina \
-  freerdp \
+  remmina freerdp \
   kdeconnect \
   ydotoold \
-  mpv \
-  imv \
+  mpv imv \
   file-roller \
-  btop \
-  fastfetch \
-  neovim \
-  yazi \
-  zoxide \
-  fzf \
-  ripgrep \
-  fd \
-  bat \
-  eza
+  btop &&
+  log "Core applications installed" ||
+  fail "Some applications failed to install"
 
-yay -S --noconfirm \
-  mullvad-vpn \
-  globalprotect-openconnect \
-  arch-update \
-  zotero-bin \
-  bibata-cursor-theme \
-  sddm-astronaut-theme
+if command -v yay &>/dev/null; then
+  run yay -S --noconfirm \
+    mullvad-vpn \
+    globalprotect-openconnect \
+    arch-update \
+    zotero-bin \
+    bibata-cursor-theme \
+    where-is-my-sddm-theme-git &&
+    log "AUR packages installed" ||
+    fail "Some AUR packages failed — check log and install manually"
 
-log "Applications installed"
-
-# Enable arch-update timer
-systemctl --user enable --now arch-update.timer 2>/dev/null \
-  || warn "arch-update timer will start on next login"
-
-# =============================================================================
-# STEP 10 — Shell (zsh + Oh-My-Zsh)
-# =============================================================================
-
-section "Shell (zsh)"
-
-sudo pacman -S --noconfirm --needed \
-  zsh \
-  zsh-syntax-highlighting \
-  zsh-autosuggestions \
-  zsh-history-substring-search \
-  starship
-
-if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
-  log "Installing Oh-My-Zsh..."
-  RUNZSH=no CHSH=no sh -c \
-    "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+  systemctl --user enable --now arch-update.timer 2>/dev/null ||
+    warn "arch-update timer failed — run: systemctl --user enable arch-update.timer"
+else
+  fail "yay unavailable — AUR packages skipped: mullvad, globalprotect, arch-update, zotero, bibata-cursor, sddm-theme"
 fi
-
-if [[ "$SHELL" != "$(which zsh)" ]]; then
-  chsh -s "$(which zsh)"
-  log "Default shell set to zsh"
-fi
-
-# =============================================================================
-# STEP 11 — Terminal (kitty)
-# =============================================================================
-
-section "Terminal (kitty)"
-
-sudo pacman -S --noconfirm --needed kitty
-log "kitty installed"
 
 # =============================================================================
 # STEP 12 — Fonts
@@ -327,209 +473,168 @@ log "kitty installed"
 
 section "Fonts"
 
-sudo pacman -S --noconfirm --needed \
-  ttf-iosevka-nerd \
-  ttf-jetbrains-mono-nerd \
-  noto-fonts \
-  noto-fonts-emoji \
-  ttf-font-awesome
-
-log "Fonts installed"
+run sudo pacman -S --noconfirm --needed \
+  ttf-iosevka-nerd ttf-jetbrains-mono-nerd \
+  noto-fonts noto-fonts-emoji ttf-font-awesome &&
+  log "Fonts installed" ||
+  fail "Font install failed"
 
 # =============================================================================
-# STEP 13 — GTK + Qt theming (clean, no KDE deps)
-#
-# nwg-look   : GTK theme manager for Wayland
-# kvantum    : Qt theme engine — one config applies to all Qt apps
-# adw-gtk3   : Modern GTK3 scrollbars/menus
-# papirus    : Icon theme — folders recolored to match autumn palette
+# STEP 13 — GTK + Qt theming
 # =============================================================================
 
 section "GTK + Qt theming"
 
-sudo pacman -S --noconfirm --needed \
-  nwg-look \
-  qt5ct \
-  qt6ct \
-  kvantum \
-  adw-gtk3 \
-  papirus-icon-theme \
-  papirus-folders
+run sudo pacman -S --noconfirm --needed \
+  nwg-look qt5ct qt6ct kvantum adw-gtk3 papirus-icon-theme papirus-folders &&
+  log "Theming tools installed" ||
+  fail "Theming tools install failed"
 
-# Recolor Papirus folders to warm brown matching autumn palette
-papirus-folders -C brown --theme Papirus-Dark
-log "Papirus folders recolored to brown"
+papirus-folders -C brown --theme Papirus-Dark 2>/dev/null &&
+  log "Papirus folders recolored" ||
+  warn "papirus-folders color failed — run manually: papirus-folders -C brown --theme Papirus-Dark"
 
 mkdir -p ~/.config/environment.d/
-cat > ~/.config/environment.d/qt-theme.conf << 'EOF'
+cat >~/.config/environment.d/qt-theme.conf <<'EOF'
 QT_QPA_PLATFORMTHEME=qt5ct
 QT_AUTO_SCREEN_SCALE_FACTOR=1
 EOF
 
-log "GTK + Qt theming tools installed"
-warn "After first boot: run nwg-look (GTK) and kvantum-manager (Qt)"
-
 # =============================================================================
-# STEP 14 — Cursor theme (.icons/default handled by dotfiles)
-# =============================================================================
-
-section "Cursor"
-
-# bibata-cursor-theme installed in step 9 via AUR
-# .icons/default/index.theme is restored from dotfiles in step 15
-log "Cursor theme installed via AUR in step 9"
-
-# =============================================================================
-# STEP 15 — SDDM
+# STEP 14 — SDDM
 # =============================================================================
 
 section "SDDM"
 
 sudo mkdir -p /etc/sddm.conf.d/
-printf '[Theme]\nCurrent=sddm-astronaut-theme\n' \
-  | sudo tee /etc/sddm.conf.d/theme.conf > /dev/null
-sudo systemctl enable sddm
-log "SDDM enabled with astronaut theme"
+
+# Use where-is-my-sddm-theme if available, else fall back gracefully
+if pacman -Qi where-is-my-sddm-theme-git &>/dev/null 2>&1; then
+  printf '[Theme]\nCurrent=where_is_my_sddm_theme\n' |
+    sudo tee /etc/sddm.conf.d/theme.conf >/dev/null
+  log "SDDM configured with where-is-my-sddm-theme"
+else
+  printf '[Theme]\nCurrent=\n' |
+    sudo tee /etc/sddm.conf.d/theme.conf >/dev/null
+  warn "SDDM theme not set — using default. Install: yay -S where-is-my-sddm-theme-git"
+fi
+
+run sudo systemctl enable sddm &&
+  log "SDDM enabled" ||
+  fail "SDDM enable failed"
 
 # =============================================================================
-# STEP 16 — System services
+# STEP 15 — System services
 # =============================================================================
 
 section "System services"
 
-sudo systemctl enable NetworkManager
-sudo systemctl enable bluetooth 2>/dev/null \
-  || warn "Bluetooth not found, skipping"
-log "System services enabled"
+run sudo systemctl enable NetworkManager &&
+  log "NetworkManager enabled" ||
+  fail "NetworkManager enable failed"
+
+sudo systemctl enable bluetooth 2>/dev/null &&
+  log "Bluetooth enabled" ||
+  warn "Bluetooth not available — skipping"
 
 # =============================================================================
-# STEP 17 — Dotfiles
-#
-# Clones dotfiles repo and copies all configs into place.
-# Configs are NOT generated by this script — they live in the repo.
-#
-# Expected repo structure:
-#   .config/hypr/           hyprland.conf + config/ + scripts/
-#   .config/waybar/         config + style.css + colors.css + modules/
-#   .config/kitty/          kitty.conf
-#   .config/nvim/           LazyVim setup
-#   .config/wofi/           config + style.css
-#   .config/mako/           config
-#   .config/yazi/           yazi configs
-#   .config/btop/           btop.conf
-#   .config/VSCodium/User/  settings.json
-#   .config/kdeconnect/     paired device configs (no keys)
-#   .config/wireplumber/    wireplumber.conf.d/51-follow-default.conf
-#   .config/environment.d/  qt-theme.conf
-#   .local/bin/             brightness-adjust
-#   .local/share/           applications/, icons/, mime/, sddm/
-#   .icons/default/         index.theme (cursor)
-#   .zshrc
-#   .zshenv (optional)
-#   .mozilla/firefox/       user.js
+# STEP 16 — Dotfiles
 # =============================================================================
 
 section "Dotfiles"
 
-log "Cloning dotfiles from $DOTFILES_REPO..."
-git clone --depth=1 "$DOTFILES_REPO" /tmp/dotfiles
+DOTFILES_DIR="/tmp/dotfiles-bootstrap"
+rm -rf "$DOTFILES_DIR" 2>/dev/null || true
 
-# .config entries
-for conf in hypr waybar kitty nvim wofi mako yazi btop kdeconnect \
-            wireplumber environment.d VSCodium; do
-  if [[ -d "/tmp/dotfiles/.config/$conf" ]]; then
-    mkdir -p ~/.config/"$conf"
-    cp -r "/tmp/dotfiles/.config/$conf/." ~/.config/"$conf"/
-    log "  Restored: ~/.config/$conf"
-  else
-    warn "  Not found in dotfiles: $conf"
-  fi
-done
-
-# Loose .config files
-for f in gtk3-settings.ini gtk4-settings.ini kdeglobals mimeapps.list; do
-  [[ -f "/tmp/dotfiles/.config/$f" ]] \
-    && cp "/tmp/dotfiles/.config/$f" ~/.config/ \
-    && log "  Restored: $f"
-done
-
-# .local/bin (scripts)
-if [[ -d /tmp/dotfiles/.local/bin ]]; then
-  mkdir -p ~/.local/bin
-  cp -r /tmp/dotfiles/.local/bin/. ~/.local/bin/
-  chmod +x ~/.local/bin/* 2>/dev/null || true
-  log "  Restored: ~/.local/bin"
+if git clone --depth=1 "$DOTFILES_REPO" "$DOTFILES_DIR"; then
+  log "Dotfiles cloned"
+else
+  fail "Dotfiles clone failed — check internet connection"
 fi
 
-# .local/share
-for share in applications icons mime sddm; do
-  if [[ -d "/tmp/dotfiles/.local/share/$share" ]]; then
-    mkdir -p ~/.local/share/"$share"
-    cp -r "/tmp/dotfiles/.local/share/$share/." ~/.local/share/"$share"/
-    log "  Restored: ~/.local/share/$share"
+if [[ -d "$DOTFILES_DIR" ]]; then
+  for conf in hypr waybar kitty nvim wofi mako yazi btop kdeconnect \
+    wireplumber environment.d VSCodium; do
+    if [[ -d "$DOTFILES_DIR/.config/$conf" ]]; then
+      mkdir -p ~/.config/"$conf"
+      cp -r "$DOTFILES_DIR/.config/$conf/." ~/.config/"$conf"/
+      log "  Restored: ~/.config/$conf"
+    fi
+  done
+
+  for f in gtk3-settings.ini gtk4-settings.ini kdeglobals mimeapps.list; do
+    [[ -f "$DOTFILES_DIR/.config/$f" ]] &&
+      cp "$DOTFILES_DIR/.config/$f" ~/.config/ &&
+      log "  Restored: $f"
+  done
+
+  [[ -d "$DOTFILES_DIR/.local/bin" ]] && {
+    mkdir -p ~/.local/bin
+    cp -r "$DOTFILES_DIR/.local/bin/." ~/.local/bin/
+    chmod +x ~/.local/bin/* 2>/dev/null || true
+    log "  Restored: ~/.local/bin"
+  }
+
+  for share in applications icons mime sddm; do
+    [[ -d "$DOTFILES_DIR/.local/share/$share" ]] && {
+      mkdir -p ~/.local/share/"$share"
+      cp -r "$DOTFILES_DIR/.local/share/$share/." ~/.local/share/"$share"/
+      log "  Restored: ~/.local/share/$share"
+    }
+  done
+
+  [[ -d "$DOTFILES_DIR/.icons" ]] && {
+    mkdir -p ~/.icons
+    cp -r "$DOTFILES_DIR/.icons/." ~/.icons/
+    log "  Restored: ~/.icons"
+  }
+
+  [[ -f "$DOTFILES_DIR/.zshrc" ]] && cp "$DOTFILES_DIR/.zshrc" ~/ && log "  Restored: .zshrc"
+  [[ -f "$DOTFILES_DIR/.zshenv" ]] && cp "$DOTFILES_DIR/.zshenv" ~/ && log "  Restored: .zshenv"
+
+  if [[ -f "$DOTFILES_DIR/.mozilla/firefox/user.js" ]]; then
+    FIREFOX_PROFILE=$(find ~/.mozilla/firefox -maxdepth 1 \
+      \( -name "*.default-release" -o -name "*.default" \) 2>/dev/null | head -1)
+    if [[ -n "$FIREFOX_PROFILE" ]]; then
+      cp "$DOTFILES_DIR/.mozilla/firefox/user.js" "$FIREFOX_PROFILE/"
+      log "  Firefox user.js applied"
+    else
+      mkdir -p ~/.mozilla/firefox
+      cp "$DOTFILES_DIR/.mozilla/firefox/user.js" ~/.mozilla/firefox/
+      warn "  Firefox not launched yet — user.js saved, will apply on first run"
+    fi
   fi
-done
 
-# Cursor default theme
-if [[ -d /tmp/dotfiles/.icons ]]; then
-  mkdir -p ~/.icons
-  cp -r /tmp/dotfiles/.icons/. ~/.icons/
-  log "  Restored: ~/.icons (cursor)"
-fi
-
-# Shell
-[[ -f /tmp/dotfiles/.zshrc  ]] && cp /tmp/dotfiles/.zshrc  ~/ && log "  Restored: .zshrc"
-[[ -f /tmp/dotfiles/.zshenv ]] && cp /tmp/dotfiles/.zshenv ~/ && log "  Restored: .zshenv"
-
-# Firefox user.js
-if [[ -f /tmp/dotfiles/.mozilla/firefox/user.js ]]; then
-  FIREFOX_PROFILE=$(find ~/.mozilla/firefox -maxdepth 1 \
-    \( -name "*.default-release" -o -name "*.default" \) 2>/dev/null | head -1)
-  if [[ -n "$FIREFOX_PROFILE" ]]; then
-    cp /tmp/dotfiles/.mozilla/firefox/user.js "$FIREFOX_PROFILE/"
-    log "  Firefox user.js applied to $FIREFOX_PROFILE"
-  else
-    warn "  Firefox profile not found — launch Firefox once then re-run this block"
-    mkdir -p ~/.mozilla/firefox
-    cp /tmp/dotfiles/.mozilla/firefox/user.js ~/.mozilla/firefox/
-  fi
-fi
-
-# SSH keys
-if [[ -d /tmp/dotfiles/.ssh ]]; then
-  cp -r /tmp/dotfiles/.ssh ~/
-  chmod 700 ~/.ssh
-  chmod 600 ~/.ssh/id_* 2>/dev/null || true
-  log "  Restored: SSH keys"
+  [[ -d "$DOTFILES_DIR/.ssh" ]] && {
+    cp -r "$DOTFILES_DIR/.ssh" ~/
+    chmod 700 ~/.ssh
+    chmod 600 ~/.ssh/id_* 2>/dev/null || true
+    log "  Restored: SSH keys"
+  }
 fi
 
 # =============================================================================
-# STEP 18 — Wallpapers
+# STEP 17 — Wallpapers
 # =============================================================================
 
 section "Wallpapers"
 
-mkdir -p ~/Pictures/wallpapers
-mkdir -p ~/Pictures/Screenshots
+mkdir -p ~/Pictures/wallpapers ~/Pictures/Screenshots
 
 if [[ -n "$WALLPAPERS_REPO" ]]; then
-  log "Cloning wallpapers from $WALLPAPERS_REPO..."
-  git clone --depth=1 "$WALLPAPERS_REPO" /tmp/wallpapers
-  find /tmp/wallpapers -type f \
-    \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \
-       -o -iname "*.webp" -o -iname "*.gif" \) \
-    -exec cp {} ~/Pictures/wallpapers/ \;
-  log "Wallpapers copied to ~/Pictures/wallpapers"
+  if git clone --depth=1 "$WALLPAPERS_REPO" /tmp/wallpapers-bootstrap 2>/dev/null; then
+    find /tmp/wallpapers-bootstrap -type f \
+      \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \
+      -o -iname "*.webp" -o -iname "*.gif" \) \
+      -exec cp {} ~/Pictures/wallpapers/ \;
+    log "Wallpapers copied"
+  else
+    fail "Wallpapers clone failed — add manually to ~/Pictures/wallpapers/"
+  fi
 fi
 
 # =============================================================================
-# STEP 19 — NAS automount (CIFS/SMB via fstab)
-#
-# Uses noauto,x-systemd.automount,_netdev so it:
-#   - Does NOT mount at boot (no boot delay if NAS is off)
-#   - Mounts on first access (transparent to apps including non-KDE)
-#   - Requires network before attempting (_netdev)
-#   - Times out gracefully if NAS unreachable
+# STEP 18 — NAS automount
 # =============================================================================
 
 section "NAS automount"
@@ -537,45 +642,48 @@ section "NAS automount"
 if [[ -n "$NAS_IP" && -n "$NAS_SHARE" && -n "$NAS_USER" ]]; then
   sudo mkdir -p "$NAS_MOUNT"
 
-  if ! grep -q "$NAS_IP/$NAS_SHARE" /etc/fstab; then
-    echo "//$NAS_IP/$NAS_SHARE  $NAS_MOUNT  cifs  noauto,x-systemd.automount,x-systemd.idle-timeout=300,_netdev,credentials=/etc/nas-credentials,uid=$(id -u),gid=$(id -g),iocharset=utf8  0  0" \
-      | sudo tee -a /etc/fstab > /dev/null
+  if ! grep -q "$NAS_IP/$NAS_SHARE" /etc/fstab 2>/dev/null; then
+    echo "//$NAS_IP/$NAS_SHARE  $NAS_MOUNT  cifs  noauto,x-systemd.automount,x-systemd.idle-timeout=300,_netdev,credentials=/etc/nas-credentials,uid=$(id -u),gid=$(id -g),iocharset=utf8  0  0" |
+      sudo tee -a /etc/fstab >/dev/null
     log "NAS fstab entry added"
+  else
+    log "NAS already in fstab"
   fi
 
   if [[ ! -f /etc/nas-credentials ]]; then
-    printf 'username=%s\npassword=CHANGE_ME\n' "$NAS_USER" \
-      | sudo tee /etc/nas-credentials > /dev/null
+    printf 'username=%s\npassword=CHANGE_ME\n' "$NAS_USER" |
+      sudo tee /etc/nas-credentials >/dev/null
     sudo chmod 600 /etc/nas-credentials
-    warn "Edit /etc/nas-credentials and set your real NAS password"
+    warn "Edit /etc/nas-credentials with your real NAS password"
   fi
 
-  sudo systemctl daemon-reload
-  log "NAS mount configured (mounts on first access, not at boot)"
+  sudo systemctl daemon-reload 2>/dev/null || true
+  log "NAS configured"
 else
-  warn "NAS vars not set — skipping NAS mount"
-  warn "Set NAS_IP, NAS_SHARE, NAS_USER at the top of this script"
+  warn "NAS vars not set — skipping"
 fi
 
 # =============================================================================
-# STEP 20 — Dual-boot Windows clock fix
+# STEP 19 — Dual-boot clock fix
 # =============================================================================
 
 section "Dual-boot clock fix"
 
-sudo timedatectl set-local-rtc 1 --adjust-system-clock
-log "RTC set to local time (prevents Windows clock drift)"
+sudo timedatectl set-local-rtc 1 --adjust-system-clock 2>/dev/null &&
+  log "RTC set to local time" ||
+  warn "timedatectl failed — run manually if dual booting Windows"
 
 # =============================================================================
-# STEP 21 — Orphan cleanup
+# STEP 20 — Orphan cleanup
 # =============================================================================
 
 section "Cleanup"
 
 ORPHANS=$(pacman -Qdtq 2>/dev/null || true)
 if [[ -n "$ORPHANS" ]]; then
-  log "Removing orphaned packages..."
-  sudo pacman -Rns $ORPHANS --noconfirm
+  sudo pacman -Rns $ORPHANS --noconfirm 2>/dev/null &&
+    log "Orphans removed" ||
+    warn "Orphan removal failed — run manually: sudo pacman -Rns \$(pacman -Qdtq)"
 else
   log "No orphans found"
 fi
@@ -589,35 +697,26 @@ echo -e "${GREEN}============================================${NC}"
 echo -e "${GREEN}  Bootstrap complete.${NC}"
 echo -e "${GREEN}============================================${NC}"
 echo ""
+
+# Show error summary if anything failed
+if grep -q "\[FAILED\]" "$LOG_FILE" 2>/dev/null; then
+  echo -e "${RED}The following steps failed and need manual attention:${NC}"
+  grep "\[FAILED\]" "$LOG_FILE"
+  echo ""
+  echo "Full log: $LOG_FILE"
+  echo ""
+else
+  echo -e "${GREEN}No failures logged.${NC}"
+  echo ""
+fi
+
 echo "After reboot — do these in order:"
-echo ""
-echo "  1. hyprctl monitors"
-echo "     → Fill in your monitor names in ~/.config/hypr/config/monitor.conf"
-echo ""
-echo "  2. ddcutil detect"
-echo "     → Verify LG external monitor DDC/CI works for brightness control"
-echo "     → If not found: enable DDC/CI in LG OSD menu"
-echo ""
-echo "  3. nwg-look"
-echo "     → Set GTK theme to adw-gtk3-dark"
-echo "     → Set icon theme to Papirus-Dark"
-echo "     → Set cursor to Bibata-Modern-Classic"
-echo ""
-echo "  4. kvantum-manager"
-echo "     → Set Qt theme to match autumn palette"
-echo "     → Then open qt5ct and set style to kvantum"
-echo ""
-echo "  5. Edit /etc/nas-credentials"
-echo "     → Replace CHANGE_ME with your real NAS password"
-echo ""
+echo "  1. hyprctl monitors → fill in monitor names in monitor.conf"
+echo "  2. ddcutil detect → verify LG DDC/CI (enable in monitor OSD if not found)"
+echo "  3. nwg-look → GTK theme: adw-gtk3-dark, icons: Papirus-Dark, cursor: Bibata"
+echo "  4. kvantum-manager + qt5ct → Qt theme"
+echo "  5. sudo nvim /etc/nas-credentials → set real NAS password"
 echo "  6. Firefox → sign into Firefox Sync"
-echo "     → Extensions, bookmarks, passwords restore automatically"
-echo ""
 echo "  7. mullvad account login YOUR_ACCOUNT_NUMBER"
 echo ""
-echo "  8. Add Limine entries for both kernels:"
-echo "     Main:     linux-cachyos  (vmlinuz-linux-cachyos)"
-echo "     Fallback: linux-lts      (vmlinuz-linux-lts)"
-echo ""
-warn "Groups (video, i2c) need a full reboot to take effect"
-warn "sudo reboot"
+echo -e "${YELLOW}Groups (video, i2c) require full reboot: sudo reboot${NC}"
