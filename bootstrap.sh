@@ -145,9 +145,9 @@ else
   log "Attempting to add CachyOS repos..."
   CACHYOS_SCRIPT_URL="https://mirror.cachyos.org/cachyos-repo.sh"
 
-  if curl -fsSL --connect-timeout 10 "$CACHYOS_SCRIPT_URL" -o /tmp/cachyos-repo.sh 2>/dev/null; then
-    if bash /tmp/cachyos-repo.sh; then
-      sudo pacman -Sy &>/dev/null || true
+  if -fsSL --connect-timeout 10 https://mirror.cachyos.org/cachyos-repo.tar.xz -o /tmp/cachyos-repo.tar.xz 2>/dev/null; then
+    cd /tmp && tar xf cachyos-repo.tar.xz && cd cachyos-repo
+    if sudo ./cachyos-repo.sh; then
       log "CachyOS repos added"
       CACHYOS_OK=true
     else
